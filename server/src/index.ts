@@ -8,6 +8,7 @@ import { executeCreateReminder } from './tools/createReminder.js';
 import { executeUpdateShoppingList } from './tools/updateShoppingList.js';
 import { executeCreateDepartureChecklist } from './tools/createDepartureChecklist.js';
 import { executeGetPendingActions } from './tools/getPendingActions.js';
+import { planRouter } from './orchestration/routes.js';
 
 dotenv.config();
 
@@ -22,6 +23,9 @@ app.use(cors({
 }));
 
 app.use(express.json());
+
+// Mount Agent Orchestration & Planning API
+app.use('/api/plan', planRouter);
 
 // Track active Streamable HTTP / SSE sessions
 interface McpSession {
@@ -219,6 +223,7 @@ const server = app.listen(PORT, () => {
   console.log(`  Streamable HTTP Msg: http://localhost:${PORT}/messages`);
   console.log(`  Health & Status:     http://localhost:${PORT}/health`);
   console.log(`  Direct Tools API:    http://localhost:${PORT}/api/tools`);
+  console.log(`  Agent Plan API:      http://localhost:${PORT}/api/plan`);
   console.log(`  Registered Tools:    5 tools available`);
   console.log(`=======================================================`);
 });

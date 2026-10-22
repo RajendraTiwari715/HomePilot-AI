@@ -113,29 +113,45 @@ export interface PendingActionsOverview {
 
 // Agent Plan Contracts
 export type PlanStepStatus = 
-  | 'planned' 
+  | 'pending'
   | 'awaiting_approval' 
   | 'running' 
   | 'succeeded' 
   | 'failed' 
+  | 'cancelled'
+  | 'skipped';
+
+export type ActionPlanStatus =
+  | 'draft'
+  | 'awaiting_approval'
+  | 'running'
+  | 'completed'
+  | 'failed'
   | 'cancelled';
 
 export interface PlanStep {
-  id: string;
-  order: number;
+  stepId: string;
   toolName: string;
   arguments: Record<string, unknown>;
-  description: string;
-  isSensitive: boolean;
+  dependsOn: string[];
+  sensitive: boolean;
   status: PlanStepStatus;
-  result?: BaseToolResult;
-  error?: string;
+  result: BaseToolResult | null;
+  error: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  approvedBy?: string | null;
+  approvedAt?: string | null;
+  rejectedBy?: string | null;
+  rejectedAt?: string | null;
 }
 
 export interface ActionPlan {
-  id: string;
-  userPrompt: string;
-  steps: PlanStep[];
+  planId: string;
+  originalRequest: string;
   createdAt: string;
-  status: 'planned' | 'in_progress' | 'completed' | 'paused_for_approval' | 'failed' | 'cancelled';
+  steps: PlanStep[];
+  requiresApproval: boolean;
+  status: ActionPlanStatus;
+  updatedAt?: string;
 }

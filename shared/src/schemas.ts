@@ -58,3 +58,77 @@ export const BaseToolResultSchema = z.object({
   actionId: z.string(),
   isSimulated: z.boolean().optional(),
 });
+
+// Plan Step and Action Plan Schemas
+export const PlanStepStatusSchema = z.enum([
+  'pending',
+  'awaiting_approval',
+  'running',
+  'succeeded',
+  'failed',
+  'cancelled',
+  'skipped'
+]);
+
+export const ActionPlanStatusSchema = z.enum([
+  'draft',
+  'awaiting_approval',
+  'running',
+  'completed',
+  'failed',
+  'cancelled'
+]);
+
+export const PlanStepSchema = z.object({
+  stepId: z.string(),
+  toolName: z.string(),
+  arguments: z.record(z.unknown()),
+  dependsOn: z.array(z.string()).default([]),
+  sensitive: z.boolean().default(false),
+  status: PlanStepStatusSchema,
+  result: BaseToolResultSchema.nullable().default(null),
+  error: z.string().nullable().default(null),
+  startedAt: z.string().nullable().default(null),
+  completedAt: z.string().nullable().default(null),
+  approvedBy: z.string().nullable().optional(),
+  approvedAt: z.string().nullable().optional(),
+  rejectedBy: z.string().nullable().optional(),
+  rejectedAt: z.string().nullable().optional()
+});
+
+export const ActionPlanSchema = z.object({
+  planId: z.string(),
+  originalRequest: z.string(),
+  createdAt: z.string(),
+  steps: z.array(PlanStepSchema),
+  requiresApproval: z.boolean(),
+  status: ActionPlanStatusSchema,
+  updatedAt: z.string().optional()
+});
+
+// API Request Schemas
+export const CreatePlanRequestSchema = z.object({
+  request: z.string().min(1, 'User request cannot be empty'),
+  autoExecute: z.boolean().optional().default(true).describe('Whether to immediately begin sequential execution up to the first approval gate')
+}).strict();
+
+export type CreatePlanRequest = z.infer<typeof CreatePlanRequestSchema>;
+
+export const ApproveStepRequestSchema = z.object({
+  approver: z.string().optional().default('User')
+}).strict();
+
+export type ApproveStepRequest = z.infer<typeof ApproveStepRequestSchema>;
+
+export const RejectStepRequestSchema = z.object({
+  reason: z.string().optional().default('Rejected by user'),
+  rejecter: z.string().optional().default('User')
+}).strict();
+
+export type RejectStepRequest = z.infer<typeof RejectStepRequestSchema>;
+
+export const CancelPlanRequestSchema = z.object({
+  reason: z.string().optional().default('Cancelled by user')
+}).strict();
+
+export type CancelPlanRequest = z.infer<typeof CancelPlanRequestSchema>;

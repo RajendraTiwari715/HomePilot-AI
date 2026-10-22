@@ -2,7 +2,16 @@ import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { Reminder, ShoppingListItem, DepartureChecklist, ChecklistItem } from '@homepilot/shared';
+import { 
+  Reminder, 
+  ShoppingListItem, 
+  DepartureChecklist, 
+  ChecklistItem, 
+  ActionPlan, 
+  PlanStep, 
+  ActionPlanStatus,
+  BaseToolResult 
+} from '@homepilot/shared';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -25,6 +34,8 @@ export function getDatabase(customPath?: string): DatabaseSync {
 
   const db = new DatabaseSync(dbPath);
   db.exec('PRAGMA foreign_keys = ON;');
+  db.exec('PRAGMA journal_mode = WAL;');
+  db.exec('PRAGMA busy_timeout = 5000;');
 
   // Initialize Tables
   db.exec(`
@@ -65,6 +76,35 @@ export function getDatabase(customPath?: string): DatabaseSync {
       completed INTEGER DEFAULT 0,
       notes TEXT,
       FOREIGN KEY (checklistId) REFERENCES departure_checklists(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS action_plans (
+      planId TEXT PRIMARY KEY,
+      originalRequest TEXT NOT NULL,
+      createdAt TEXT NOT NULL,
+      requiresApproval INTEGER DEFAULT 0,
+      status TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS plan_steps (
+      stepId TEXT PRIMARY KEY,
+      planId TEXT NOT NULL,
+      stepIndex INTEGER NOT NULL,
+      toolName TEXT NOT NULL,
+      arguments TEXT NOT NULL,
+      dependsOn TEXT NOT NULL,
+      sensitive INTEGER DEFAULT 0,
+      status TEXT NOT NULL,
+      result TEXT,
+      error TEXT,
+      startedAt TEXT,
+      completedAt TEXT,
+      approvedBy TEXT,
+      approvedAt TEXT,
+      rejectedBy TEXT,
+      rejectedAt TEXT,
+      FOREIGN KEY (planId) REFERENCES action_plans(planId) ON DELETE CASCADE
     );
   `);
 
@@ -346,3 +386,147 @@ export function getAllChecklistItems(completedFilter?: boolean): ChecklistItem[]
     notes: r.notes ? String(r.notes) : undefined
   }));
 }
+
+// Data Access Layer: Action Plans & Steps
+export function saveActionPlan(plan: ActionPlan): void {
+  const db = getDatabase();
+  const now = new Date().toISOString();
+  const updatedAt = plan.updatedAt || now;
+
+  db.prepare(`
+    INSERT INTO action_plans (planId, originalRequest, createdAt, requiresApproval, status, updatedAt)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(planId) DO UPDATE SET
+      status = excluded.status,
+      requiresApproval = excluded.requiresApproval,
+      updatedAt = excluded.updatedAt
+  `).run(
+    plan.planId,
+    plan.originalRequest,
+    plan.createdAt,
+    plan.requiresApproval ? 1 : 0,
+    plan.status,
+    updatedAt
+  );
+
+  // Upsert steps
+  for (let i = 0; i < plan.steps.length; i++) {
+    const s = plan.steps[i];
+    db.prepare(`
+      INSERT INTO plan_steps (
+        stepId, planId, stepIndex, toolName, arguments, dependsOn, sensitive,
+        status, result, error, startedAt, completedAt,
+        approvedBy, approvedAt, rejectedBy, rejectedAt
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(stepId) DO UPDATE SET
+        status = excluded.status,
+        result = excluded.result,
+        error = excluded.error,
+        startedAt = excluded.startedAt,
+        completedAt = excluded.completedAt,
+        approvedBy = excluded.approvedBy,
+        approvedAt = excluded.approvedAt,
+        rejectedBy = excluded.rejectedBy,
+        rejectedAt = excluded.rejectedAt
+    `).run(
+      s.stepId,
+      plan.planId,
+      i,
+      s.toolName,
+      JSON.stringify(s.arguments),
+      JSON.stringify(s.dependsOn),
+      s.sensitive ? 1 : 0,
+      s.status,
+      s.result ? JSON.stringify(s.result) : null,
+      s.error,
+      s.startedAt,
+      s.completedAt,
+      s.approvedBy || null,
+      s.approvedAt || null,
+      s.rejectedBy || null,
+      s.rejectedAt || null
+    );
+  }
+}
+
+export function updatePlanStep(planId: string, step: PlanStep): void {
+  const db = getDatabase();
+  const now = new Date().toISOString();
+
+  db.prepare(`
+    UPDATE plan_steps SET
+      status = ?,
+      result = ?,
+      error = ?,
+      startedAt = ?,
+      completedAt = ?,
+      approvedBy = ?,
+      approvedAt = ?,
+      rejectedBy = ?,
+      rejectedAt = ?
+    WHERE stepId = ? AND planId = ?
+  `).run(
+    step.status,
+    step.result ? JSON.stringify(step.result) : null,
+    step.error,
+    step.startedAt,
+    step.completedAt,
+    step.approvedBy || null,
+    step.approvedAt || null,
+    step.rejectedBy || null,
+    step.rejectedAt || null,
+    step.stepId,
+    planId
+  );
+
+  db.prepare(`UPDATE action_plans SET updatedAt = ? WHERE planId = ?`).run(now, planId);
+}
+
+export function updatePlanStatus(planId: string, status: ActionPlanStatus): void {
+  const db = getDatabase();
+  const now = new Date().toISOString();
+  db.prepare(`UPDATE action_plans SET status = ?, updatedAt = ? WHERE planId = ?`).run(status, now, planId);
+}
+
+export function getActionPlan(planId: string): ActionPlan | null {
+  const db = getDatabase();
+  const planRow = db.prepare(`SELECT * FROM action_plans WHERE planId = ?`).get(planId) as Record<string, unknown> | undefined;
+  if (!planRow) return null;
+
+  const stepRows = db.prepare(`SELECT * FROM plan_steps WHERE planId = ? ORDER BY stepIndex ASC`).all(planId) as Record<string, unknown>[];
+
+  const steps: PlanStep[] = stepRows.map(r => ({
+    stepId: String(r.stepId),
+    toolName: String(r.toolName),
+    arguments: JSON.parse(String(r.arguments || '{}')) as Record<string, unknown>,
+    dependsOn: JSON.parse(String(r.dependsOn || '[]')) as string[],
+    sensitive: Boolean(r.sensitive),
+    status: r.status as PlanStep['status'],
+    result: r.result ? (JSON.parse(String(r.result)) as BaseToolResult) : null,
+    error: r.error ? String(r.error) : null,
+    startedAt: r.startedAt ? String(r.startedAt) : null,
+    completedAt: r.completedAt ? String(r.completedAt) : null,
+    approvedBy: r.approvedBy ? String(r.approvedBy) : null,
+    approvedAt: r.approvedAt ? String(r.approvedAt) : null,
+    rejectedBy: r.rejectedBy ? String(r.rejectedBy) : null,
+    rejectedAt: r.rejectedAt ? String(r.rejectedAt) : null
+  }));
+
+  return {
+    planId: String(planRow.planId),
+    originalRequest: String(planRow.originalRequest),
+    createdAt: String(planRow.createdAt),
+    steps,
+    requiresApproval: Boolean(planRow.requiresApproval),
+    status: planRow.status as ActionPlanStatus,
+    updatedAt: planRow.updatedAt ? String(planRow.updatedAt) : undefined
+  };
+}
+
+export function getAllActionPlans(): ActionPlan[] {
+  const db = getDatabase();
+  const planRows = db.prepare(`SELECT planId FROM action_plans ORDER BY createdAt DESC`).all() as Record<string, unknown>[];
+  return planRows.map(r => getActionPlan(String(r.planId))).filter((p): p is ActionPlan => p !== null);
+}
+
